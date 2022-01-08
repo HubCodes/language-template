@@ -1,0 +1,18 @@
+[package]
+name = "parser"
+version = "0.1.0"
+authors = ["HubCodes <krlrhkstk12@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lalrpop-util = "0.19.0"
+regex = "1"
+lazy_static = "1.4.0"
+lang = { version = "0.1.0", path = "../lang" }
+uuid = { version = "0.8", features = ["serde", "v4"] }
+
+# Add a build-time dependency on the lalrpop library:
+[build-dependencies]
+lalrpop = { version = "0.19.0", features = ["lexer"] }

@@ -1,0 +1,249 @@
+use crate::State;
+use std::collections::HashMap;
+use std::str::FromStr;
+use lang::ast::*;
+use lalrpop_util::ParseError;
+use uuid::Uuid;
+
+grammar(state: &mut State);
+
+pub Stmt: Stmt = {
+    VarDef,
+    If,
+    <e:Expr> ";" => Stmt::Expr(e),
+}
+
+VarDef: Stmt = {
+    "let" <name:Symbol> <e:VarDefInit?> ";" => {
+        match e {
+            Some(e) => Stmt::VarDef(name, Some(e)),
+            None => Stmt::VarDef(name, None),
+        }
+    },
+}
+
+If: Stmt = {
+    "if" "(" <c:Expr> ")" "{" <ss:StmtList?> "}" => {
+        let block_name = Uuid::new_v4();
+        let block_symbol = Symbol { id: state.next_symbol_id(), name: block_name.to_string() };
+        match ss {
+            Some(ss) => Stmt::If(c, Box::new(Block::new(block_symbol, ss)), None),
+            None => Stmt::If(c, Box::new(Block::new(block_symbol, vec![])), None),
+        }
+    },
+}
+
+StmtList: Vec<Stmt> = {
+    <ss:StmtList> <s:Stmt> => {
+        let mut ss = ss;
+        ss.push(s);
+        ss
+    },
+    <s:Stmt> => vec![s]
+}
+
+VarDefInit: Expr = {
+    "=" <e:Expr> => e,
+}
+
+pub Expr: Expr = {
+    AssignExpr,
+    Lambda,
+}
+
+Lambda: Expr = {
+    "function" "(" <es:Args?> ")" "{" <ss:StmtList?> "}" => {
+        let lambda_name = Uuid::new_v4();
+        let block_name = Uuid::new_v4();
+        let lambda_sym = Symbol { id: state.next_symbol_id(), name: lambda_name.to_string() };
+        let block_sym = Symbol { id: state.next_symbol_id(), name: block_name.to_string() };
+        match (es, ss) {
+            (Some(es), Some(ss)) =>
+                Expr::Lambda(
+                    lambda_sym,
+                    es,
+                    Box::new(Stmt::Block(Block::new(block_sym, ss))),
+                ),
+            (None, Some(ss)) =>
+                Expr::Lambda(
+                    lambda_sym,
+                    vec![],
+                    Box::new(Stmt::Block(Block::new(block_sym, ss))),
+                ),
+            (Some(es), None) =>
+                Expr::Lambda(
+                    lambda_sym,
+                    es,
+                    Box::new(Stmt::Block(Block::new(block_sym, vec![]))),
+                ),
+            (None, None) =>
+                Expr::Lambda(
+                    lambda_sym,
+                    vec![],
+                    Box::new(Stmt::Block(Block::new(block_sym, vec![]))),
+                ),
+        }
+    }
+}
+
+AssignExpr: Expr = {
+    <e:UnaryExpr> "=" <a:AssignExpr> => Expr::Assign(Box::new(e), Box::new(a)),
+    OrExpr,
+}
+
+OrExpr: Expr = {
+    <e:OrExpr> "||" <a:AndExpr> => Expr::Binop(Binop::Or, Box::new(e), Box::new(a)),
+    AndExpr,
+}
+
+AndExpr: Expr = {
+    <e:AndExpr> "&&" <a:BitOrExpr> => Expr::Binop(Binop::And, Box::new(e), Box::new(a)),
+    BitOrExpr,
+}
+
+BitOrExpr: Expr = {
+    <e:BitOrExpr> "|" <a:XorExpr> => Expr::Binop(Binop::BitOr, Box::new(e), Box::new(a)),
+    XorExpr,
+}
+
+XorExpr: Expr = {
+    <e:XorExpr> "^" <a:BitAndExpr> => Expr::Binop(Binop::Xor, Box::new(e), Box::new(a)),
+    BitAndExpr,
+}
+
+BitAndExpr: Expr = {
+    <e:BitAndExpr> "&" <a:EqExpr> => Expr::Binop(Binop::BitAnd, Box::new(e), Box::new(a)),
+    EqExpr,
+}
+
+EqExpr: Expr = {
+    <e:EqExpr> "==" <a:RelationExpr> => Expr::Binop(Binop::Eq, Box::new(e), Box::new(a)),
+    <e:EqExpr> "!=" <a:RelationExpr> => Expr::Binop(Binop::Neq, Box::new(e), Box::new(a)),
+    RelationExpr,
+}
+
+RelationExpr: Expr = {
+    <e:RelationExpr> "<" <u:ShiftExpr> => Expr::Binop(Binop::Lt, Box::new(e), Box::new(u)),
+    <e:RelationExpr> ">" <u:ShiftExpr> => Expr::Binop(Binop::Gt, Box::new(e), Box::new(u)),
+    <e:RelationExpr> "<=" <u:ShiftExpr> => Expr::Binop(Binop::Lte, Box::new(e), Box::new(u)),
+    <e:RelationExpr> ">=" <u:ShiftExpr> => Expr::Binop(Binop::Gte, Box::new(e), Box::new(u)),
+    ShiftExpr,
+}
+
+ShiftExpr: Expr = {
+    <e:ShiftExpr> "<<" <a:AddSubExpr> => Expr::Binop(Binop::Shl, Box::new(e), Box::new(a)),
+    <e:ShiftExpr> ">>" <a:AddSubExpr> => Expr::Binop(Binop::Shr, Box::new(e), Box::new(a)),
+    AddSubExpr,
+}
+
+AddSubExpr: Expr = {
+    <e:AddSubExpr> "+" <m:MulDivModExpr> => Expr::Binop(Binop::Add, Box::new(e), Box::new(m)),
+    <e:AddSubExpr> "-" <m:MulDivModExpr> => Expr::Binop(Binop::Sub, Box::new(e), Box::new(m)),
+    MulDivModExpr,
+}
+
+MulDivModExpr: Expr = {
+    <e:MulDivModExpr> "*" <u:UnaryExpr> => Expr::Binop(Binop::Mul, Box::new(e), Box::new(u)),
+    <e:MulDivModExpr> "/" <u:UnaryExpr> => Expr::Binop(Binop::Div, Box::new(e), Box::new(u)),
+    <e:MulDivModExpr> "%" <u:UnaryExpr> => Expr::Binop(Binop::Mod, Box::new(e), Box::new(u)),
+    UnaryExpr,
+}
+
+UnaryExpr: Expr = {
+    "typeof" <e:UnaryExpr> => Expr::Typeof(Box::new(e)),
+    PostfixExpr,
+}
+
+PostfixExpr: Expr = {
+    <t:Term> => Expr::Term(t),
+    <e:PostfixExpr> "[" <i:Expr> "]" => Expr::Index(Box::new(e), Box::new(i)),
+    FnCall,
+    "(" <e:Expr> ")" => e,
+    <e:PostfixExpr> "." <s:Symbol> => Expr::Member(Box::new(e), s),
+}
+
+pub Term: Term = {
+    <o:Obj> => Term::Obj(o),
+    <s:Symbol> => Term::Symbol(s),
+    <n:Number> => Term::Num(n),
+    <s:String> => Term::Str(s),
+};
+
+Obj: Obj = {
+    "{" <kv_map:KeyValueList?> "}" => {
+        match kv_map {
+            Some(kv_map) => Obj { kv: kv_map },
+            None => Obj { kv: HashMap::new() },
+        }
+    }
+}
+
+KeyValueList: HashMap<String, Expr> = {
+    <kv_map:KeyValueList> "," <key:ObjKey> ":" <value:Expr> => {
+        let mut kv_map = kv_map;
+        kv_map.insert(key, value);
+        kv_map
+    },
+    <key:ObjKey> ":" <value:Expr> => {
+        let mut kv_map = HashMap::new();
+        kv_map.insert(key, value);
+        kv_map
+    },
+}
+
+ObjKey: String = {
+    <n:Number> => {
+        match n {
+            Num::Int(i) => i.to_string(),
+            Num::Double(d) => d.to_string(),
+        }
+    },
+    <s:Symbol> => s.name,
+    <s:String> => s,
+}
+
+FnCall: Expr = {
+    <e:PostfixExpr> "(" <es:Exprs?> ")" => {
+        match es {
+            None => Expr::Call(Box::new(e), vec![]),
+            Some(es) => Expr::Call(Box::new(e), es),
+        }
+    },
+}
+
+Exprs: Vec<Expr> = {
+    <es:Exprs> "," <e:Expr> => {
+        let mut es = es;
+        es.push(e);
+        es
+    },
+    Expr => vec![<>],
+}
+
+Args: Vec<Symbol> = {
+    <ss:Args> "," <s:Symbol> => {
+        let mut ss = ss;
+        ss.push(s);
+        ss
+    },
+    Symbol => vec![<>],
+}
+
+Number: Num = {
+    r"[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?" =>? i32::from_str(<>).map(Num::Int).or(
+        f64::from_str(<>).map(Num::Double).map_err(|_| ParseError::User {
+            error: "Invalid number"
+        })
+    ),
+}
+
+String: String = {
+    <s:r"'[^\n]*'"> => s[1..s.len()-1].to_string(),
+    <s:r#""[^\n]*""#> => s[1..s.len()-1].to_string(),
+}
+
+Symbol: Symbol = {
+    <s:r"[a-zA-Z_$][a-zA-Z0-9_$]*"> => {
+        Symbol { id: state.next_symbol_id(), name: s.to_string() }
+    },
+}
